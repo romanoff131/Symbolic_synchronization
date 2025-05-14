@@ -4,6 +4,7 @@ import numpy as np
 import adi
 import random
 
+# === Функция задания параметров Adalm Pluto SDR ===
 def standart_settings(Pluto_IP="192.168.3.1", sample_rate=1e6, buffer_size=1e3, gain_mode="manual"):
     sdr = adi.Pluto(Pluto_IP)
     sdr.sample_rate = int(sample_rate)
@@ -12,6 +13,7 @@ def standart_settings(Pluto_IP="192.168.3.1", sample_rate=1e6, buffer_size=1e3, 
     print(f"[INFO] SDR настроен: sample_rate={sample_rate}, buffer_size={buffer_size}, gain_mode={gain_mode}")
     return sdr
 
+# === Функция отрисовки графиков ===
 def plot_constellation(symbols, title="Constellation Diagram"):
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.scatter(np.real(symbols), np.imag(symbols), color='blue', s=50, marker='o', edgecolors='k', alpha=0.8)
@@ -27,6 +29,7 @@ def plot_constellation(symbols, title="Constellation Diagram"):
     ax.set_ylim([-max_val, max_val])
     plt.tight_layout()
 
+# === Функция алгоритма фазовой синхронизации phase-locked-loop ===
 def PLL(conv):
     mu = 0.1
     theta = 0
@@ -40,6 +43,7 @@ def PLL(conv):
     print(f"[INFO] PLL завершён. Итоговое значение theta = {theta:.3f}")
     return output_signal
 
+# === Функция алгоритма символьной синхронизации Gardner TED ===
 def gardner_ted(signal, nsp=10):
     """
     Возвращает индексы и вектор ошибки -- для последующего графика!
@@ -99,11 +103,13 @@ def autocorr_freq_correct(signal, n_lag=1):
     corrected = x * np.exp(-1j * freq_error * n)
     return corrected, freq_error
 
+# === Функция генерации рандомной битовой последовательности ===
 def randomDataGenerator(size):
     bits = [random.randint(0, 1) for _ in range(size)]
     print(f"[INFO] Сгенерировано {len(bits)} бит.")
     return bits
 
+# === Функция модуляции QAM16 === 
 def QAM16(bit_mass):
     qam16_table = {
         (0, 0, 0, 0): complex(-3, -3) / np.sqrt(10),
@@ -130,6 +136,7 @@ def QAM16(bit_mass):
     print(f"[INFO] QAM16: Сформировано {len(sample)} символов.")
     return sample
 
+# === Функция модуляции QAM64 === 
 def QAM64(bit_mass):
     ampl = 2**14
     if len(bit_mass) % 6 != 0:
@@ -144,6 +151,7 @@ def QAM64(bit_mass):
     print(f"[INFO] QAM64: Сформировано {len(symbols)} символов.")
     return symbols / np.sqrt(42) * ampl
 
+# === Функция демодуляции QAM16 ===
 def QAM16_demod(rx_symbols):
     qam16_table = {
         (0, 0, 0, 0): complex(-3, -3) / np.sqrt(10),
@@ -173,6 +181,7 @@ def QAM16_demod(rx_symbols):
     print(f"[INFO] QAM16 демодулировано {len(rx_symbols)} символов в {len(demod_bits)} бит.")
     return np.array(demod_bits, dtype=np.uint8)
 
+# === Функция демодуляции QAM64 ===
 def QAM64_demod(rx_symbols):
     ampl = 2**14
     if np.max(np.abs(rx_symbols)) > 8:
@@ -188,6 +197,7 @@ def QAM64_demod(rx_symbols):
     print(f"[INFO] QAM64 демодулировано {len(rx_symbols)} символов в {len(result_bits)} бит.")
     return np.array(result_bits, dtype=np.uint8)
 
+# === TX/RX ===
 def tx_signal(sdr, tx_lo, gain_tx, data, tx_cycle=True):
     sdr.tx_lo = int(tx_lo)
     sdr.tx_hardwaregain_chan0 = gain_tx
@@ -206,6 +216,7 @@ def rx_signal(sdr, rx_lo, gain_rx, cycle):
     return np.concatenate(data)
 
 def main():
+
     print("=== SDR Алгоритм символьной синхронизации QAM ===")
     sdr = standart_settings("ip:192.168.3.1", 1e6, 10e3)
 
@@ -224,6 +235,7 @@ def main():
         mod_function = QAM16
         bits_per_symbol = 4
 
+    # === Генерация битовой последовательности ===
     bit_length = 2400
     bit_msg = randomDataGenerator(bit_length)
     valid_length = (len(bit_msg) // bits_per_symbol) * bits_per_symbol
@@ -231,29 +243,31 @@ def main():
     print(f"[INFO] Битовая последовательность длиной {len(bit_msg)} (округлена до кратности {bits_per_symbol}).")
     print("[DEBUG] Первые 20 бит:", bit_msg[:20])
 
+    # === Формирование QAM символов ===
     qam_signal = mod_function(bit_msg)
     print(f"[INFO] Сформировано {len(qam_signal)} QAM символов.")
 
     signalRepeat = np.repeat(qam_signal, 10) * (2**14)
     print(f"[INFO] Длина передаваемого сигнала: {len(signalRepeat)} выборок.")
 
+    # === TX/RX ===
     tx_signal(sdr, 2300e6, 0, signalRepeat)
     rx_sig = rx_signal(sdr, 2300e6, 20, 5)
     rx_sig = rx_sig / np.max(np.abs(rx_sig))
     print(f"[INFO] Полученный сигнал нормализован. Длина сигнала: {len(rx_sig)} выборок.")
 
-    # === Q1: Вернуть графики по Gardner ===
+    # === Графики функции Gardner_TED ===
     plot_constellation(rx_sig, title="Received Signal")
     gardner_indices, gardner_error = gardner_ted(rx_sig, nsp=10)
     rx_after_ted = rx_sig[gardner_indices]
     print(f"[INFO] После временной синхронизации получено {len(rx_after_ted)} символов.")
     plot_constellation(rx_after_ted, title="After Gardner TED")
 
-    # === Q2: Только автокорреляция без отображения отдельного графика ===
+    # === Автокорреляция ===
     rx_after_freqcorr, freq_error = autocorr_freq_correct(rx_after_ted, n_lag=1)
     print(f"[INFO] После частотной коррекции (автокорреляция) частотная ошибка = {freq_error:.6e} рад/отсчёт")
-    # plot_constellation(rx_after_freqcorr, title="After Frequency Correction") # отключено по просьбе
 
+    # === График фазовой синхронизации созвездия ===
     rx_after_pll = PLL(rx_after_freqcorr)
     plot_constellation(rx_after_pll, title="After PLL")
 
