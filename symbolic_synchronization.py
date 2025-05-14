@@ -30,18 +30,31 @@ def plot_constellation(symbols, title="Constellation Diagram"):
     plt.tight_layout()
 
 # === Функция алгоритма фазовой синхронизации phase-locked-loop ===
-def PLL(conv):
-    mu = 0.1
-    theta = 0
-    phase_error = np.zeros(len(conv))
-    output_signal = np.zeros(len(conv), dtype=np.complex128)
-    for n in range(len(conv)):
-        theta_hat = np.angle(conv[n])
-        phase_error[n] = theta_hat - theta
-        output_signal[n] = conv[n] * np.exp(-1j * theta)
-        theta = theta + mu * phase_error[n]
-    print(f"[INFO] PLL завершён. Итоговое значение theta = {theta:.3f}")
-    return output_signal
+def PLL(signal, constellation, mu=0.05, verbose=True):
+    """
+    Universal decision-directed PLL suitable for QAM-16 and QAM-64.
+    signal : complex input vector
+    constellation : np.array of reference constellation points (normalized)
+    mu : PLL correction gain
+    """
+    output = np.zeros_like(signal, dtype=np.complex128)
+    theta = 0.0
+    phase_error = np.zeros(len(signal), dtype=float)
+    for n, x in enumerate(signal):
+        # Remove estimated carrier phase
+        x_rot = x * np.exp(-1j * theta)
+        # Decision: map to nearest reference
+        idx = np.argmin(np.abs(constellation - x_rot))
+        decision = constellation[idx]
+        # Calculate phase difference between received and reference
+        err = np.angle(x_rot * np.conj(decision))
+        phase_error[n] = err
+        # Loop update
+        theta += mu * err
+        output[n] = x * np.exp(-1j * theta)
+    if verbose:
+        print(f"[INFO] PLL-QAM завершён. финальное theta={theta:.3f}, mean error={np.mean(phase_error):.3e}")
+    return output
 
 # === Функция алгоритма символьной синхронизации Gardner TED ===
 def gardner_ted(signal, nsp=10):
@@ -215,6 +228,37 @@ def rx_signal(sdr, rx_lo, gain_rx, cycle):
     print(f"[INFO] Принято {cycle} блоков данных от SDR.")
     return np.concatenate(data)
 
+def get_constellation(bits_per_symbol):
+    """
+    Получение массива точек созвездия для нужной модуляции.
+    """
+    if bits_per_symbol == 4:
+        qam16_table = {
+            (0, 0, 0, 0): complex(-3, -3) / np.sqrt(10),
+            (0, 0, 0, 1): complex(-3, -1) / np.sqrt(10),
+            (0, 0, 1, 0): complex(-3,  3) / np.sqrt(10),
+            (0, 0, 1, 1): complex(-3,  1) / np.sqrt(10),
+            (0, 1, 0, 0): complex(-1, -3) / np.sqrt(10),
+            (0, 1, 0, 1): complex(-1, -1) / np.sqrt(10),
+            (0, 1, 1, 0): complex(-1,  3) / np.sqrt(10),
+            (0, 1, 1, 1): complex(-1,  1) / np.sqrt(10),
+            (1, 0, 0, 0): complex( 3, -3) / np.sqrt(10),
+            (1, 0, 0, 1): complex( 3, -1) / np.sqrt(10),
+            (1, 0, 1, 0): complex( 3,  3) / np.sqrt(10),
+            (1, 0, 1, 1): complex( 3,  1) / np.sqrt(10),
+            (1, 1, 0, 0): complex( 1, -3) / np.sqrt(10),
+            (1, 1, 0, 1): complex( 1, -1) / np.sqrt(10),
+            (1, 1, 1, 0): complex( 1,  3) / np.sqrt(10),
+            (1, 1, 1, 1): complex( 1,  1) / np.sqrt(10),
+        }
+        return np.array(list(qam16_table.values()))
+    elif bits_per_symbol == 6:
+        decision_levels = np.array([-7, -5, -3, -1, 1, 3, 5, 7]) / np.sqrt(42)
+        # 64 точки, нормированный уровень!
+        return np.array([complex(i, q) for i in decision_levels for q in decision_levels])
+    else:
+        raise ValueError("Unsupported bits_per_symbol for constellation!")
+
 def main():
 
     print("=== SDR Алгоритм символьной синхронизации QAM ===")
@@ -227,13 +271,16 @@ def main():
     if choice == "1":
         mod_function = QAM16
         bits_per_symbol = 4
+        demod_function = QAM16_demod
     elif choice == "2":
         mod_function = QAM64
         bits_per_symbol = 6
+        demod_function = QAM64_demod
     else:
         print("[WARN] Неверный выбор, используется QAM16.")
         mod_function = QAM16
         bits_per_symbol = 4
+        demod_function = QAM16_demod
 
     # === Генерация битовой последовательности ===
     bit_length = 2400
@@ -268,15 +315,11 @@ def main():
     print(f"[INFO] После частотной коррекции (автокорреляция) частотная ошибка = {freq_error:.6e} рад/отсчёт")
 
     # === График фазовой синхронизации созвездия ===
-    rx_after_pll = PLL(rx_after_freqcorr)
-    plot_constellation(rx_after_pll, title="After PLL")
+    constellation = get_constellation(bits_per_symbol)
+    rx_after_pll = PLL(rx_after_freqcorr, constellation, mu=0.05)
+    plot_constellation(rx_after_pll, title="After PLL (decision-directed)")
 
-    if bits_per_symbol == 4:
-        demod_bits = QAM16_demod(rx_after_pll)
-    elif bits_per_symbol == 6:
-        demod_bits = QAM64_demod(rx_after_pll)
-    else:
-        demod_bits = None
+    demod_bits = demod_function(rx_after_pll)
     print(f"[INFO] Демодулированные биты (первые 20): {demod_bits[:20]}")
 
     plt.show()
