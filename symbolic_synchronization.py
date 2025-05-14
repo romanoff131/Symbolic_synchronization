@@ -31,12 +31,6 @@ def plot_constellation(symbols, title="Constellation Diagram"):
 
 # === Функция алгоритма фазовой синхронизации phase-locked-loop ===
 def PLL(signal, constellation, mu=0.05, verbose=True):
-    """
-    Universal decision-directed PLL suitable for QAM-16 and QAM-64.
-    signal : complex input vector
-    constellation : np.array of reference constellation points (normalized)
-    mu : PLL correction gain
-    """
     output = np.zeros_like(signal, dtype=np.complex128)
     theta = 0.0
     phase_error = np.zeros(len(signal), dtype=float)
@@ -58,52 +52,25 @@ def PLL(signal, constellation, mu=0.05, verbose=True):
 
 # === Функция алгоритма символьной синхронизации Gardner TED ===
 def gardner_ted(signal, nsp=10):
-    """
-    Возвращает индексы и вектор ошибки -- для последующего графика!
-    """
     error = np.zeros(len(signal) // nsp)
-    timing_offsets = []
     index_sync = []
-    offset = 0
     for i in range(nsp, len(signal) - nsp, nsp):
         s_early = signal[i - nsp//2]
         s_mid = signal[i]
         s_late = signal[i + nsp//2]
         err = (s_late - s_early) * np.conj(s_mid)
         error[i // nsp] = np.real(err)
-
-        offset += np.real(err) * 0.01  # условная динамика
-        timing_offsets.append(offset)
         index_sync.append(i)
-
-    # RENDER improved error plot
     plt.figure(figsize=(8, 4))
-    plt.plot(error, label="Gardner Timing Error", lw=1)
-    plt.title("Gardner TED Timing Error per Symbol")
-    plt.xlabel("Symbol Index (not sample!)")
-    plt.ylabel("Timing Error")
-    plt.axhline(0, color='red', linestyle='--', label='Zero error')
-    # Добавим скользящее среднее
-    window = 15
-    if len(error) > window:
-        moving_avg = np.convolve(error, np.ones(window)/window, mode='valid')
-        plt.plot(range(window//2,window//2+len(moving_avg)), moving_avg, 'g', lw=2, label='Moving Avg')
+    plt.plot(error, label="Timing Error")
+    plt.title("Gardner TED Timing Error")
+    plt.xlabel("Index (Symbol periods)")
+    plt.ylabel("Error")
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-
-    # Вывод динамики смещения момента
-    plt.figure(figsize=(8, 4))
-    plt.plot(timing_offsets, label="Timing Offset (Dynamic)")
-    plt.title("Timing Offset Dynamics (Gardner TED)")
-    plt.xlabel("Symbol index")
-    plt.ylabel("Timing Offset [a.u.]")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-
     print("[INFO] Gardner TED завершён.")
-    return np.array(index_sync), error
+    return np.array(index_sync)
 
 # --- Функция для частотной коррекции через автокорреляцию ---
 def autocorr_freq_correct(signal, n_lag=1):
@@ -305,7 +272,7 @@ def main():
 
     # === Графики функции Gardner_TED ===
     plot_constellation(rx_sig, title="Received Signal")
-    gardner_indices, gardner_error = gardner_ted(rx_sig, nsp=10)
+    gardner_indices = gardner_ted(rx_sig, nsp=10)
     rx_after_ted = rx_sig[gardner_indices]
     print(f"[INFO] После временной синхронизации получено {len(rx_after_ted)} символов.")
     plot_constellation(rx_after_ted, title="After Gardner TED")
