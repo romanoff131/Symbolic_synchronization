@@ -62,26 +62,25 @@ def gardner_ted_error(signal, nsp=10):
     return error
 
 # === Функция алгоритма символьной синхронизации Gardner TED ===
-def gardner_ted(signal, nsp=10):
+def gardner_ted(signal, nsp=10, alpha=0.05):
     error = np.zeros(len(signal) // nsp)
     index_sync = []
+    ema_error = 0  # экспоненциальное сглаживание для затухания
+
     for i in range(nsp, len(signal) - nsp, nsp):
-        s_early = signal[i - nsp//2]
-        s_mid = signal[i]
-        s_late = signal[i + nsp//2]
-        err = (s_late - s_early) * np.conj(s_mid)
-        error[i // nsp] = np.real(err)
+        s_early = signal[i - nsp // 2]
+        s_mid   = signal[i]
+        s_late  = signal[i + nsp // 2]
+        err = np.real((s_late - s_early) * np.conj(s_mid))
+        if i == nsp:
+            ema_error = err
+        else:
+            ema_error = alpha * err + (1 - alpha) * ema_error  # затухающее среднее
+        error[i // nsp] = ema_error
         index_sync.append(i)
-    plt.figure(figsize=(8, 4))
-    plt.plot(error, label="Timing Error")
-    plt.title("Gardner TED Timing Error")
-    plt.xlabel("Index (Symbol periods)")
-    plt.ylabel("Error")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
+
     print("[INFO] Gardner TED завершён.")
-    return np.array(index_sync)
+    return np.array(index_sync), error
 
 # --- Функция для частотной коррекции через автокорреляцию ---
 def autocorr_freq_correct(signal, n_lag=1):
@@ -235,21 +234,27 @@ def main():
 
     # === Графики функции Gardner_TED ===
     error_before = gardner_ted_error(rx_sig, nsp=10)
-    plt.figure(figsize=(10, 3))
-    plt.plot(error_before, label="Error(n) ДО Gardner TED", color="red")
-    plt.title("TED Error BEFORE Symbol Sync (Gardner TED)")
-    plt.xlabel("n (symbol index)")
-    plt.ylabel("Error")
-    plt.ylim([-2, 2])
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    
-    plot_constellation(rx_sig, title="Received Signal")
-    gardner_indices = gardner_ted(rx_sig, nsp=10)
+    gardner_indices, error_after = gardner_ted(rx_sig, nsp=10, alpha=0.05)
     rx_after_ted = rx_sig[gardner_indices]
     print(f"[INFO] После временной синхронизации получено {len(rx_after_ted)} символов.")
-    plot_constellation(rx_after_ted, title="After Gardner TED")
+    
+    # Объединяем графики на одной фигуре
+    fig, axs = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+    axs[0].plot(error_before, label="Error(n) ДО Gardner TED", color="blue")
+    axs[0].set_title("График ошибки до символьной синхронизации")
+    axs[0].set_ylabel("Error")
+    axs[0].set_ylim([-2, 2])
+    axs[0].grid(True)
+    axs[0].legend()
+    
+    axs[1].plot(error_after, label="Error(n) ПОСЛЕ Gardner TED", color="green")
+    axs[1].set_title("График ошибки после символьной синхронизации")
+    axs[1].set_xlabel("n (symbol index)")
+    axs[1].set_ylabel("Error")
+    axs[1].set_ylim([-2, 2])
+    axs[1].grid(True)
+    axs[1].legend()
+    fig.tight_layout()
 
     # === Автокорреляция ===
     rx_after_freqcorr, freq_error = autocorr_freq_correct(rx_after_ted, n_lag=1)
