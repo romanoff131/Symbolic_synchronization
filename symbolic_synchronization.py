@@ -5,7 +5,7 @@ import adi
 import random
 
 # === Функция задания параметров Adalm Pluto SDR ===
-def standart_settings(Pluto_IP="192.168.3.1", sample_rate=1e6, buffer_size=1e3, gain_mode="manual"):
+def standart_settings(Pluto_IP="192.168.2.1", sample_rate=1e6, buffer_size=1e3, gain_mode="manual"):
     sdr = adi.Pluto(Pluto_IP)
     sdr.sample_rate = int(sample_rate)
     sdr.rx_buffer_size = int(buffer_size)
@@ -49,6 +49,17 @@ def PLL(signal, constellation, mu=0.05, verbose=True):
     if verbose:
         print(f"[INFO] PLL-QAM завершён. финальное theta={theta:.3f}, mean error={np.mean(phase_error):.3e}")
     return output
+
+def gardner_ted_error(signal, nsp=10):
+    error = np.zeros(len(signal) // nsp)
+    for i in range(nsp, len(signal) - nsp, nsp):
+        s_early = signal[i - nsp // 2]
+        s_mid   = signal[i]
+        s_late  = signal[i + nsp // 2]
+        err = np.real((s_late - s_early) * np.conj(s_mid))
+        error[i // nsp] = err
+    print("[INFO] Gardner TED: ошибка БЕЗ синхронизации рассчитана.")
+    return error
 
 # === Функция алгоритма символьной синхронизации Gardner TED ===
 def gardner_ted(signal, nsp=10):
@@ -131,52 +142,6 @@ def QAM64(bit_mass):
     print(f"[INFO] QAM64: Сформировано {len(symbols)} символов.")
     return symbols / np.sqrt(42) * ampl
 
-# === Функция демодуляции QAM16 ===
-def QAM16_demod(rx_symbols):
-    qam16_table = {
-        (0, 0, 0, 0): complex(-3, -3) / np.sqrt(10),
-        (0, 0, 0, 1): complex(-3, -1) / np.sqrt(10),
-        (0, 0, 1, 0): complex(-3,  3) / np.sqrt(10),
-        (0, 0, 1, 1): complex(-3,  1) / np.sqrt(10),
-        (0, 1, 0, 0): complex(-1, -3) / np.sqrt(10),
-        (0, 1, 0, 1): complex(-1, -1) / np.sqrt(10),
-        (0, 1, 1, 0): complex(-1,  3) / np.sqrt(10),
-        (0, 1, 1, 1): complex(-1,  1) / np.sqrt(10),
-        (1, 0, 0, 0): complex( 3, -3) / np.sqrt(10),
-        (1, 0, 0, 1): complex( 3, -1) / np.sqrt(10),
-        (1, 0, 1, 0): complex( 3,  3) / np.sqrt(10),
-        (1, 0, 1, 1): complex( 3,  1) / np.sqrt(10),
-        (1, 1, 0, 0): complex( 1, -3) / np.sqrt(10),
-        (1, 1, 0, 1): complex( 1, -1) / np.sqrt(10),
-        (1, 1, 1, 0): complex( 1,  3) / np.sqrt(10),
-        (1, 1, 1, 1): complex( 1,  1) / np.sqrt(10),
-    }
-    constellation = np.array(list(qam16_table.values()))
-    bits_list = list(qam16_table.keys())
-    demod_bits = []
-    for symbol in rx_symbols:
-        dist = np.abs(symbol - constellation)
-        idx = np.argmin(dist)
-        demod_bits.extend(bits_list[idx])
-    print(f"[INFO] QAM16 демодулировано {len(rx_symbols)} символов в {len(demod_bits)} бит.")
-    return np.array(demod_bits, dtype=np.uint8)
-
-# === Функция демодуляции QAM64 ===
-def QAM64_demod(rx_symbols):
-    ampl = 2**14
-    if np.max(np.abs(rx_symbols)) > 8:
-        rx_symbols = rx_symbols / ampl
-    rx_symbols = rx_symbols * np.sqrt(42)
-    decision_levels = np.array([-7, -5, -3, -1, 1, 3, 5, 7])
-    val_to_bits = {v: [int(x) for x in format(((v + 7) // 2), '03b')] for v in decision_levels}
-    result_bits = []
-    for symbol in rx_symbols:
-        i = decision_levels[np.argmin(np.abs(np.real(symbol) - decision_levels))]
-        q = decision_levels[np.argmin(np.abs(np.imag(symbol) - decision_levels))]
-        result_bits.extend(val_to_bits[i] + val_to_bits[q])
-    print(f"[INFO] QAM64 демодулировано {len(rx_symbols)} символов в {len(result_bits)} бит.")
-    return np.array(result_bits, dtype=np.uint8)
-
 # === TX/RX ===
 def tx_signal(sdr, tx_lo, gain_tx, data, tx_cycle=True):
     sdr.tx_lo = int(tx_lo)
@@ -226,10 +191,11 @@ def get_constellation(bits_per_symbol):
     else:
         raise ValueError("Unsupported bits_per_symbol for constellation!")
 
+
 def main():
 
     print("=== SDR Алгоритм символьной синхронизации QAM ===")
-    sdr = standart_settings("ip:192.168.3.1", 1e6, 10e3)
+    sdr = standart_settings("ip:192.168.2.1", 1e6, 10e3)
 
     print("\nВыберите схему модуляции:")
     print("1: QAM16")
@@ -238,16 +204,13 @@ def main():
     if choice == "1":
         mod_function = QAM16
         bits_per_symbol = 4
-        demod_function = QAM16_demod
     elif choice == "2":
         mod_function = QAM64
         bits_per_symbol = 6
-        demod_function = QAM64_demod
     else:
         print("[WARN] Неверный выбор, используется QAM16.")
         mod_function = QAM16
         bits_per_symbol = 4
-        demod_function = QAM16_demod
 
     # === Генерация битовой последовательности ===
     bit_length = 2400
@@ -271,6 +234,17 @@ def main():
     print(f"[INFO] Полученный сигнал нормализован. Длина сигнала: {len(rx_sig)} выборок.")
 
     # === Графики функции Gardner_TED ===
+    error_before = gardner_ted_error(rx_sig, nsp=10)
+    plt.figure(figsize=(10, 3))
+    plt.plot(error_before, label="Error(n) ДО Gardner TED", color="red")
+    plt.title("TED Error BEFORE Symbol Sync (Gardner TED)")
+    plt.xlabel("n (symbol index)")
+    plt.ylabel("Error")
+    plt.ylim([-2, 2])
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    
     plot_constellation(rx_sig, title="Received Signal")
     gardner_indices = gardner_ted(rx_sig, nsp=10)
     rx_after_ted = rx_sig[gardner_indices]
@@ -284,10 +258,7 @@ def main():
     # === График фазовой синхронизации созвездия ===
     constellation = get_constellation(bits_per_symbol)
     rx_after_pll = PLL(rx_after_freqcorr, constellation, mu=0.05)
-    plot_constellation(rx_after_pll, title="After PLL (decision-directed)")
-
-    demod_bits = demod_function(rx_after_pll)
-    print(f"[INFO] Демодулированные биты (первые 20): {demod_bits[:20]}")
+    plot_constellation(rx_after_pll, title="After PLL")
 
     plt.show()
     print("[INFO] Программа завершена.")
