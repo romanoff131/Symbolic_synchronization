@@ -190,7 +190,6 @@ def get_constellation(bits_per_symbol):
     else:
         raise ValueError("Unsupported bits_per_symbol for constellation!")
 
-
 def main():
 
     print("=== SDR Алгоритм символьной синхронизации QAM ===")
@@ -232,6 +231,8 @@ def main():
     rx_sig = rx_sig / np.max(np.abs(rx_sig))
     print(f"[INFO] Полученный сигнал нормализован. Длина сигнала: {len(rx_sig)} выборок.")
 
+    plot_constellation(rx_sig, title="Received Signal")
+
     # === Графики функции Gardner_TED ===
     error_before = gardner_ted_error(rx_sig, nsp=10)
     gardner_indices, error_after = gardner_ted(rx_sig, nsp=10, alpha=0.05)
@@ -255,6 +256,8 @@ def main():
     axs[1].grid(True)
     axs[1].legend()
     fig.tight_layout()
+
+    plot_constellation(rx_after_ted, title="After Gardner TED")
 
     # === Автокорреляция ===
     rx_after_freqcorr, freq_error = autocorr_freq_correct(rx_after_ted, n_lag=1)
