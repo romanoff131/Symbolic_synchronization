@@ -36,24 +36,39 @@ def plot_constellation(symbols, title="Constellation Diagram", ax=None):
         plt.show(block=False)
         plt.pause(0.1)
 
-# === PLL-функция с возвратом ошибок ===
-def PLL(signal, constellation, mu=0.05, verbose=True):
-    output = np.zeros_like(signal, dtype=np.complex128)
-    theta = 0.0
-    phase_errors = np.zeros(len(signal), dtype=float)
-    for n, x in enumerate(signal):
-        x_rot = x * np.exp(-1j * theta)
-        idx = np.argmin(np.abs(constellation - x_rot))
-        decision = constellation[idx]
-        err = np.angle(x_rot * np.conj(decision))
-        phase_errors[n] = err
-        theta += mu * err
-        output[n] = x_rot
-    if verbose:
-        print(f"[INFO] PLL завершён. финальное theta={theta:.3f}, mean error={np.mean(phase_errors):.3e}")
-    return output, phase_errors
+# === Фазовая синхронизация Decision-Directed PLL ===
+def dd_pll_qam(received_syms, constellation, loop_bw=0.02, damping=1.0, verbose=True):
 
-# === Гарднер TED с управляемым накопителем (NCO) ===
+    N = len(received_syms)
+    out_syms = np.zeros_like(received_syms, dtype=np.complex128)
+    phase_errs = np.zeros(N)
+    est_phase = 0.0
+
+    zeta = damping
+    wn = loop_bw
+    denom = 1 + 2 * zeta * wn + wn ** 2
+    alpha = (4 * zeta * wn) / denom    
+    beta = (4 * wn ** 2) / denom      
+    int_err = 0.0
+    theta = est_phase
+
+    for n in range(N):
+        rx_rot = received_syms[n] * np.exp(-1j * theta)
+        idx = np.argmin(np.abs(rx_rot - constellation))
+        decision = constellation[idx]
+        err = np.angle(rx_rot * np.conj(decision)) 
+        int_err += beta * err
+        theta += alpha * err + int_err
+
+        out_syms[n] = received_syms[n] * np.exp(-1j * theta)
+        phase_errs[n] = err
+
+    if verbose:
+        mean_abs_err = np.mean(np.abs(phase_errs))
+        print(f"[INFO] DD-PLL завершён. Средняя ошибка фазы: {mean_abs_err:.3e}, финальный угол={theta:.4f} рад")
+    return out_syms, phase_errs
+
+# === Гарднер TED ===
 def gardner_ted_synchronizer(sig, nsp=10, Kp=0.01, Ki=0.0001, alpha=0.1):
     N = len(sig)
     N_out_max = int(N / nsp * 1.5)
@@ -103,13 +118,13 @@ def gardner_ted_synchronizer(sig, nsp=10, Kp=0.01, Ki=0.0001, alpha=0.1):
     print(f"[INFO] Gardner TED завершён. Получено {count} символов.")
     return output[:count], timing_errors[:count]
 
-# === Gardner TED ошибка до синхронизации (визуализация) ===
+# === Gardner TED ошибка до синхронизации ===
 def gardner_ted_error_calc(signal, nsp=10):
     num_potential_symbols = (len(signal) - nsp) // nsp
     errors = np.zeros(num_potential_symbols)
     count = 0
     for i in range(nsp // 2, len(signal) - nsp // 2 -1, nsp):
-        if i >= nsp // 2 and i < len(signal) - nsp // 2 :
+        if i >= nsp // 2 and i < len(signal) - nsp // 2:
             s_early = signal[i - nsp // 2]
             s_mid   = signal[i]
             s_late  = signal[i + nsp // 2]
@@ -122,7 +137,7 @@ def gardner_ted_error_calc(signal, nsp=10):
     print(f"[INFO] Gardner TED ошибка БЕЗ синхронизации рассчитана для {count} точек.")
     return errors[:count]
 
-# --- Функция для частотной коррекции через автокорреляцию ---
+# === Функция для частотной коррекции через автокорреляцию ===
 def autocorr_freq_correct(signal, n_lag=1):
     x = signal
     if len(x) <= n_lag:
@@ -264,22 +279,37 @@ def calculate_evm(received_symbols, ideal_constellation_points):
         evm_db = 20 * np.log10(evm_rms / 100.0)
     return evm_per_symbol, evm_rms, evm_db, ideal_symbols_for_rx, error_vectors
 
-# ===========================================================
-#                      MAIN
-# ===========================================================
+def advanced_amplitude_affine_correction(symbols_rx, ideal_constellation):
+    if len(symbols_rx) == 0:
+        return symbols_rx, (1.0+0j, 0.0+0j, 0.0+0j)
+    idx_nearest = np.argmin(np.abs(symbols_rx[:, None] - ideal_constellation[None, :]), axis=1)
+    nearest_const = ideal_constellation[idx_nearest]
+    X = np.vstack([symbols_rx, np.conj(symbols_rx), np.ones_like(symbols_rx)]).T
+    Y = nearest_const
+    coeffs, _, _, _ = np.linalg.lstsq(X, Y, rcond=None)
+    a, b, c = coeffs
+    corrected = a * symbols_rx + b * np.conj(symbols_rx) + c
+    return corrected, (a, b, c)
+
+# === Комппенсация глобального фазового сдвига ===
+def global_phase_compensation(received_syms, reference_syms):
+    if len(received_syms) == 0 or len(reference_syms) == 0:
+        return received_syms, 0.0
+    angle_offset = np.angle(np.sum(reference_syms * np.conj(received_syms)))
+    corrected_syms = received_syms * np.exp(1j * angle_offset)
+    return corrected_syms, angle_offset
 
 def main():
     sdr = None
     try:
         print("=== SDR Алгоритм символьной синхронизации QAM ===")
-        # --- Настройки SDR и модуляции ---
-        pluto_ip = "ip:192.168.2.1"
+        pluto_ip = "ip:192.168.3.1"
         sample_rate = 1e6
         buffer_size_sdr = int(2**14)
         tx_lo_freq = 2100e6
         rx_lo_freq = 2100e6
-        tx_gain = -10
-        rx_gain = 20
+        tx_gain = 0
+        rx_gain = 0
         num_buffers_to_receive = 10
         bit_length = 4800
         samples_per_symbol_tx = 10
@@ -302,20 +332,18 @@ def main():
             mod_function = QAM16
             bits_per_symbol = 4
 
-        # === Генерация бит ===
         bit_msg_raw = randomDataGenerator(bit_length)
         valid_length = (len(bit_msg_raw) // bits_per_symbol) * bits_per_symbol
         bit_msg = bit_msg_raw[:valid_length]
         print(f"[INFO] Битовая последовательность скорректирована до длины {len(bit_msg)} (кратна {bits_per_symbol}).")
 
-        # === QAM-сигнал ===
         qam_symbols_tx = mod_function(bit_msg)
         print(f"[INFO] Сформировано {len(qam_symbols_tx)} QAM символов для передачи.")
 
         signal_to_transmit = np.repeat(qam_symbols_tx, samples_per_symbol_tx) * (2**14)
         print(f"[INFO] Длина передаваемого сигнала: {len(signal_to_transmit)} выборок (отсчетов на символ: {samples_per_symbol_tx}).")
 
-        # === TX/RX ===
+        # TX/RX
         tx_signal(sdr, tx_lo_freq, tx_gain, signal_to_transmit, tx_cycle=True)
         rx_sig_raw = rx_signal(sdr, rx_lo_freq, rx_gain, num_buffers_to_receive)
         sdr.tx_destroy_buffer()
@@ -323,7 +351,6 @@ def main():
 
         plot_constellation(rx_sig_raw, title="Received Signal")
 
-        # RMS-нормализация
         rms_val = np.sqrt(np.mean(np.abs(rx_sig_raw)**2))
         if rms_val < 1e-6:
             print("[WARN] RMS принятого сигнала очень мал.")
@@ -332,10 +359,8 @@ def main():
             rx_sig_normalized = rx_sig_raw / rms_val
         print(f"[INFO] Полученный сигнал нормализован по RMS. Длина сигнала: {len(rx_sig_normalized)} выборок.")
 
-        # Gardner TED ошибка до синхронизации (визуализация)
         error_before_sync = gardner_ted_error_calc(rx_sig_normalized, nsp=samples_per_symbol_tx)
 
-        # === Символьная синхронизация Gardner TED ===
         gardner_kp = 0.01
         gardner_ki = 0.0001
         rx_after_gardner, ted_errors_during_sync = gardner_ted_synchronizer(
@@ -352,7 +377,6 @@ def main():
 
         plot_constellation(rx_after_gardner, title="After Gardner TED")
 
-        # Графики ошибок Gardner TED
         fig_ted, axs_ted = plt.subplots(2, 1, figsize=(12, 8), sharex=False)
         axs_ted[0].plot(error_before_sync, label="TED Error BEFORE Sync", color="blue", markersize=2)
         axs_ted[0].set_title("Ошибка Gardner TED до символьной синхронизации")
@@ -367,45 +391,70 @@ def main():
         axs_ted[1].legend()
         fig_ted.tight_layout()
 
-        # === Частотная коррекция через автокорреляцию ===
-        rx_after_freqcorr, freq_error_rad_per_symbol = autocorr_freq_correct(rx_after_gardner, n_lag=1)
+        rx_after_freqcorr, freq_error_rad_per_symbol = autocorr_freq_correct(rx_after_gardner, n_lag=2)
         print(f"[INFO] После частотной коррекции (автокорреляция) остаточная ошибка = {freq_error_rad_per_symbol:.6e} рад/символ")
 
-        # PLL
+        # === DD-PLL ===
         constellation_ref = get_constellation(bits_per_symbol)
-        pll_mu = 0.1
-        rx_after_pll, pll_phase_errors = PLL(rx_after_freqcorr, constellation_ref, mu=pll_mu)
-        plot_constellation(rx_after_pll, title="After PLL Phase Correction")
+        pll_loop_bw = 0.04
+        pll_damping = 0.7
+        rx_after_pll, pll_phase_errors = dd_pll_qam(
+            rx_after_freqcorr,
+            constellation_ref,
+            loop_bw=pll_loop_bw,
+            damping=pll_damping,
+            verbose=True
+        )
+        plot_constellation(rx_after_pll, title="After QAM DD-PLL Phase Tracker")
+
+        # Аффинная коррекция амплитуды
+        corrected_rx_after_pll, abc_coeffs = advanced_amplitude_affine_correction(rx_after_pll, constellation_ref)
+        a, b, c = abc_coeffs
+        print(f"[INFO] Амплитудная коррекция (расширенная):", end=' ')
+        print(f'a={a:.4f}, b={b:.4f}, c={c:.4f}')
 
         # EVM Analysis
-        transient_skip = min(len(rx_after_pll) // 10, 50)
-        if len(rx_after_pll) > transient_skip:
-            symbols_for_evm = rx_after_pll[transient_skip:]
+        transient_skip = min(len(corrected_rx_after_pll) // 10, 50)
+        if len(corrected_rx_after_pll) > transient_skip:
+            symbols_for_evm = corrected_rx_after_pll[transient_skip:]
             evm_per_symbol, evm_rms, evm_db, ideal_sym_map, err_vec = calculate_evm(symbols_for_evm, constellation_ref)
-            print(f"[INFO] EVM: RMS = {evm_rms:.2f}% ({evm_db:.2f} dB) для {len(symbols_for_evm)} символов")
-            # График EVM vs Symbol
+
+            symbols_for_evm_phasecorr, phase_correction_angle = global_phase_compensation(symbols_for_evm, ideal_sym_map)
+            print(f"[INFO] Фазовый сдвиг (глобальная компенсация): {np.degrees(phase_correction_angle):.2f} град.")
+
+            evm_per_symbol2, evm_rms2, evm_db2, ideal_sym_map2, err_vec2 = calculate_evm(symbols_for_evm_phasecorr, constellation_ref)
+            evm_peak2 = np.max(evm_per_symbol2)
+            evm_95_2 = np.percentile(evm_per_symbol2, 95)
+
+            print(f"[INFO] EVM ПОСЛЕ фазовой компенсации: RMS = {evm_rms2:.2f}% ({evm_db2:.2f} dB) для {len(symbols_for_evm_phasecorr)} символов")
+            print(f"[INFO] Пиковое значение EVM = {evm_peak2:.2f}%")
+            print(f"[INFO] 95-й процентиль EVM = {evm_95_2:.2f}%")
+
+            plt.figure(figsize=(7, 7))
+            plt.scatter(np.real(ideal_sym_map2), np.imag(ideal_sym_map2), c="limegreen", s=16, alpha=0.85, label="Ideal (Mapped)")
+            plt.scatter(np.real(symbols_for_evm_phasecorr), np.imag(symbols_for_evm_phasecorr), c="royalblue", s=16, alpha=0.4, label="Received (Measured, phase corr)")
+            step = max(1, len(symbols_for_evm)//150)
+            for idx in range(0, len(symbols_for_evm_phasecorr), step):
+                plt.arrow(
+                    np.real(ideal_sym_map2[idx]), np.imag(ideal_sym_map2[idx]),
+                    np.real(err_vec2[idx]), np.imag(err_vec2[idx]),
+                    color="crimson", width=0.002, head_width=0.05, alpha=0.7, length_includes_head=True
+                )
+            plt.title("+EVM vectors")
+            plt.xlabel("In-phase")
+            plt.ylabel("Quadrature")
+            plt.grid(True)
+            plt.legend(loc="best")
+            plt.axis("equal")
+            plt.tight_layout()
             plt.figure(figsize=(10, 4))
-            plt.plot(evm_per_symbol, markersize=3, alpha=0.6)
-            plt.title(f'EVM vs Symbol Index (RMS: {evm_rms:.2f}%)')
+            plt.plot(evm_per_symbol2, markersize=3, alpha=0.6)
+            plt.title(f'EVM vs Symbol Index (RMS: {evm_rms2:.2f}%) — Phase Corrected')
             plt.xlabel('Symbol Index (after transient skip)')
             plt.ylabel('EVM (%)')
             plt.grid(True)
-            plt.ylim(0, max(50, np.max(evm_per_symbol)*1.1 if len(evm_per_symbol)>0 else 50) )
+            plt.ylim(0, max(50, np.max(evm_per_symbol2)*1.1 if len(evm_per_symbol2)>0 else 50) )
             plt.tight_layout()
-            # График спектра ошибки
-            if len(err_vec) > 1:
-                fft_error = np.fft.fftshift(np.fft.fft(err_vec))
-                fft_ideal = np.fft.fftshift(np.fft.fft(ideal_sym_map))
-                freq_axis = np.fft.fftshift(np.fft.fftfreq(len(err_vec)))
-                plt.figure(figsize=(10, 4))
-                plt.plot(freq_axis, 20*np.log10(np.abs(fft_ideal)), label='Mapped Ideal Symbols Spectrum')
-                plt.plot(freq_axis, 20*np.log10(np.abs(fft_error)), label='Error Vector Spectrum')
-                plt.title('Frequency Domain: Mapped Ideal vs Error Vector')
-                plt.xlabel('Normalized Frequency (cycles/symbol)')
-                plt.ylabel('Magnitude (dB)')
-                plt.legend()
-                plt.grid(True)
-                plt.tight_layout()
         else:
             print("[INFO] Недостаточно символов для анализа EVM после пропуска переходного процесса.")
 
