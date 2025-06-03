@@ -37,18 +37,18 @@ def plot_constellation(symbols, title="Constellation Diagram", ax=None):
         plt.pause(0.1)
 
 # === Фазовая синхронизация Decision-Directed PLL ===
-def dd_pll_qam(received_syms, constellation, loop_bw=0.02, damping=1.0, verbose=True):
-
+def dd_pll_qam(received_syms, constellation, loop_bw=0.01, damping=0.707, verbose=True):
+    
     N = len(received_syms)
-    out_syms = np.zeros_like(received_syms, dtype=np.complex128)
+    out_syms = np.zeros(N, dtype=np.complex128)
     phase_errs = np.zeros(N)
     est_phase = 0.0
 
     zeta = damping
     wn = loop_bw
-    denom = 1 + 2 * zeta * wn + wn ** 2
-    alpha = (4 * zeta * wn) / denom    
-    beta = (4 * wn ** 2) / denom      
+    denom = 1 + 2 * zeta * wn + wn**2
+    alpha = (4 * zeta * wn) / denom
+    beta = (4 * wn**2) / denom
     int_err = 0.0
     theta = est_phase
 
@@ -56,16 +56,15 @@ def dd_pll_qam(received_syms, constellation, loop_bw=0.02, damping=1.0, verbose=
         rx_rot = received_syms[n] * np.exp(-1j * theta)
         idx = np.argmin(np.abs(rx_rot - constellation))
         decision = constellation[idx]
-        err = np.angle(rx_rot * np.conj(decision)) 
-        int_err += beta * err
+        err = np.angle(rx_rot * np.conj(decision))
         theta += alpha * err + int_err
+        int_err += beta * err
 
-        out_syms[n] = received_syms[n] * np.exp(-1j * theta)
+        out_syms[n] = rx_rot
         phase_errs[n] = err
 
     if verbose:
-        mean_abs_err = np.mean(np.abs(phase_errs))
-        print(f"[INFO] DD-PLL завершён. Средняя ошибка фазы: {mean_abs_err:.3e}, финальный угол={theta:.4f} рад")
+        print(f"Средняя ошибка фазы: {np.mean(np.abs(phase_errs))}")
     return out_syms, phase_errs
 
 # === Гарднер TED ===
@@ -137,21 +136,7 @@ def gardner_ted_error_calc(signal, nsp=10):
     print(f"[INFO] Gardner TED ошибка БЕЗ синхронизации рассчитана для {count} точек.")
     return errors[:count]
 
-# === Функция для частотной коррекции через автокорреляцию ===
-def autocorr_freq_correct(signal, n_lag=1):
-    x = signal
-    if len(x) <= n_lag:
-        print("[WARN] Сигнал слишком короткий для автокорреляционной коррекции.")
-        return x, 0.0
-    auto_corr_lagged = x[n_lag:] * np.conj(x[:-n_lag])
-    mean_phase_offset = np.angle(np.mean(auto_corr_lagged))
-    freq_error = mean_phase_offset / n_lag
-    print(f"[INFO] Оценена частотная ошибка: {freq_error:.6f} рад/отсч.")
-    n = np.arange(len(x))
-    corrected = x * np.exp(-1j * freq_error * n)
-    return corrected, freq_error
-
-# === ГЕНЕРАЦИЯ БИТ ===
+# === генерация бит ===
 def randomDataGenerator(size):
     bits = np.random.randint(0, 2, size)
     print(f"[INFO] Сгенерировано {len(bits)} бит.")
@@ -391,20 +376,17 @@ def main():
         axs_ted[1].legend()
         fig_ted.tight_layout()
 
-        rx_after_freqcorr, freq_error_rad_per_symbol = autocorr_freq_correct(rx_after_gardner, n_lag=2)
-        print(f"[INFO] После частотной коррекции (автокорреляция) остаточная ошибка = {freq_error_rad_per_symbol:.6e} рад/символ")
-
         # === DD-PLL ===
         constellation_ref = get_constellation(bits_per_symbol)
-        pll_loop_bw = 0.04
+        pll_loop_bw = 0.02
         pll_damping = 0.7
         rx_after_pll, pll_phase_errors = dd_pll_qam(
-            rx_after_freqcorr,
+            rx_after_gardner,
             constellation_ref,
             loop_bw=pll_loop_bw,
             damping=pll_damping,
             verbose=True
-        )
+        )   
         plot_constellation(rx_after_pll, title="After QAM DD-PLL Phase Tracker")
 
         # Аффинная коррекция амплитуды
@@ -440,7 +422,7 @@ def main():
                     np.real(err_vec2[idx]), np.imag(err_vec2[idx]),
                     color="crimson", width=0.002, head_width=0.05, alpha=0.7, length_includes_head=True
                 )
-            plt.title("+EVM vectors")
+            plt.title("EVM vectors")
             plt.xlabel("In-phase")
             plt.ylabel("Quadrature")
             plt.grid(True)
