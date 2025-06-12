@@ -15,26 +15,20 @@ def standart_settings(Pluto_IP="192.168.2.1", sample_rate=1e6, buffer_size=1e3, 
 # === Функция отрисовки графиков ===
 def plot_constellation(symbols, title="Constellation Diagram", ax=None):
     if ax is None:
-        fig, ax_new = plt.subplots(figsize=(6, 6))
-    else:
-        ax_new = ax
-        ax_new.clear()
-
-    ax_new.scatter(np.real(symbols), np.imag(symbols), color='blue', s=50, marker='o', edgecolors='k', alpha=0.8)
-    ax_new.set_title(title)
-    ax_new.set_xlabel("In-phase")
-    ax_new.set_ylabel("Quadrature")
-    ax_new.axhline(0, color='red', linewidth=1, linestyle='--')
-    ax_new.axvline(0, color='red', linewidth=1, linestyle='--')
-    ax_new.grid(True)
-    ax_new.set_aspect('equal', 'box')
+        raise Exception("plot_constellation: обязан получить ax (ось)!")
+    ax.clear()
+    ax.scatter(np.real(symbols), np.imag(symbols),
+               color='blue', s=50, marker='o', edgecolors='k', alpha=0.8)
+    ax.set_title(title)
+    ax.set_xlabel("In-phase")
+    ax.set_ylabel("Quadrature")
+    ax.axhline(0, color='red', linewidth=1, linestyle='--')
+    ax.axvline(0, color='red', linewidth=1, linestyle='--')
+    ax.grid(True)
+    ax.set_aspect('equal', 'box')
     max_val = np.max(np.abs(symbols)) * 1.2 if len(symbols) > 0 else 1.0
-    ax_new.set_xlim(-max_val, max_val)
-    ax_new.set_ylim(-max_val, max_val)
-    if ax is None:
-        plt.tight_layout()
-        plt.show(block=False)
-        plt.pause(0.1)
+    ax.set_xlim(-max_val, max_val)
+    ax.set_ylim(-max_val, max_val)
 
 # === Фазовая синхронизация Decision-Directed PLL ===
 def dd_pll_qam(received_syms, constellation, loop_bw=0.01, damping=0.707, verbose=True):
@@ -136,7 +130,7 @@ def gardner_ted_error_calc(signal, nsp=10):
     print(f"[INFO] Gardner TED ошибка БЕЗ синхронизации рассчитана для {count} точек.")
     return errors[:count]
 
-# === генерация бит ===
+# === Генерация бит ===
 def randomDataGenerator(size):
     bits = np.random.randint(0, 2, size)
     print(f"[INFO] Сгенерировано {len(bits)} бит.")
@@ -288,7 +282,7 @@ def main():
     sdr = None
     try:
         print("=== SDR Алгоритм символьной синхронизации QAM ===")
-        pluto_ip = "ip:192.168.3.1"
+        pluto_ip = "ip:192.168.2.1"
         sample_rate = 1e6
         buffer_size_sdr = int(2**14)
         tx_lo_freq = 2100e6
@@ -298,6 +292,10 @@ def main():
         num_buffers_to_receive = 10
         bit_length = 4800
         samples_per_symbol_tx = 10
+
+        fig, axs = plt.subplots(2, 3, figsize=(18, 10))
+        axs = axs.flatten()
+        current_ax = 0
 
         sdr = standart_settings(pluto_ip, sample_rate, buffer_size_sdr, gain_mode="manual")
         sdr.rx_enabled_channels = [0]
@@ -334,7 +332,8 @@ def main():
         sdr.tx_destroy_buffer()
         print(f"[INFO] Принято {len(rx_sig_raw)} сырых выборок от SDR.")
 
-        plot_constellation(rx_sig_raw, title="Received Signal")
+        plot_constellation(rx_sig_raw, title="Received Signal", ax=axs[current_ax])
+        current_ax += 1
 
         rms_val = np.sqrt(np.mean(np.abs(rx_sig_raw)**2))
         if rms_val < 1e-6:
@@ -360,21 +359,22 @@ def main():
             print("[ERROR] Gardner TED не вернул символы. Stop.")
             return
 
-        plot_constellation(rx_after_gardner, title="After Gardner TED")
+        plot_constellation(rx_after_gardner, title="After Gardner TED", ax=axs[current_ax])
+        current_ax += 1
 
-        fig_ted, axs_ted = plt.subplots(2, 1, figsize=(12, 8), sharex=False)
-        axs_ted[0].plot(error_before_sync, label="TED Error BEFORE Sync", color="blue", markersize=2)
-        axs_ted[0].set_title("Ошибка Gardner TED до символьной синхронизации")
-        axs_ted[0].set_ylabel("Error")
-        axs_ted[0].grid(True)
-        axs_ted[0].legend()
-        axs_ted[1].plot(ted_errors_during_sync, label="TED Error DURING Sync", color="green", markersize=2)
-        axs_ted[1].set_title("Ошибка Gardner TED в процессе символьной синхронизации")
-        axs_ted[1].set_xlabel("Symbol Index")
-        axs_ted[1].set_ylabel("Error (smoothed)")
-        axs_ted[1].grid(True)
-        axs_ted[1].legend()
-        fig_ted.tight_layout()
+        axs[current_ax].plot(error_before_sync, label="TED Error BEFORE Sync", color="blue", markersize=2)
+        axs[current_ax].set_title("Ошибка Gardner TED до символьной синхронизации")
+        axs[current_ax].set_ylabel("Error")
+        axs[current_ax].grid(True)
+        axs[current_ax].legend()
+        current_ax += 1
+        axs[current_ax].plot(ted_errors_during_sync, label="TED Error DURING Sync", color="green", markersize=2)
+        axs[current_ax].set_title("Ошибка Gardner TED в процессе символьной синхронизации")
+        axs[current_ax].set_xlabel("Symbol Index")
+        axs[current_ax].set_ylabel("Error")
+        axs[current_ax].grid(True)
+        axs[current_ax].legend()
+        current_ax += 1
 
         # === DD-PLL ===
         constellation_ref = get_constellation(bits_per_symbol)
@@ -386,8 +386,9 @@ def main():
             loop_bw=pll_loop_bw,
             damping=pll_damping,
             verbose=True
-        )   
-        plot_constellation(rx_after_pll, title="After QAM DD-PLL Phase Tracker")
+        )
+        plot_constellation(rx_after_pll, title="After QAM DD-PLL Phase Tracker", ax=axs[current_ax])
+        current_ax += 1
 
         # Аффинная коррекция амплитуды
         corrected_rx_after_pll, abc_coeffs = advanced_amplitude_affine_correction(rx_after_pll, constellation_ref)
@@ -400,7 +401,6 @@ def main():
         if len(corrected_rx_after_pll) > transient_skip:
             symbols_for_evm = corrected_rx_after_pll[transient_skip:]
             evm_per_symbol, evm_rms, evm_db, ideal_sym_map, err_vec = calculate_evm(symbols_for_evm, constellation_ref)
-
             symbols_for_evm_phasecorr, phase_correction_angle = global_phase_compensation(symbols_for_evm, ideal_sym_map)
             print(f"[INFO] Фазовый сдвиг (глобальная компенсация): {np.degrees(phase_correction_angle):.2f} град.")
 
@@ -412,33 +412,21 @@ def main():
             print(f"[INFO] Пиковое значение EVM = {evm_peak2:.2f}%")
             print(f"[INFO] 95-й процентиль EVM = {evm_95_2:.2f}%")
 
-            plt.figure(figsize=(7, 7))
-            plt.scatter(np.real(ideal_sym_map2), np.imag(ideal_sym_map2), c="limegreen", s=16, alpha=0.85, label="Ideal (Mapped)")
-            plt.scatter(np.real(symbols_for_evm_phasecorr), np.imag(symbols_for_evm_phasecorr), c="royalblue", s=16, alpha=0.4, label="Received (Measured, phase corr)")
-            step = max(1, len(symbols_for_evm)//150)
-            for idx in range(0, len(symbols_for_evm_phasecorr), step):
-                plt.arrow(
-                    np.real(ideal_sym_map2[idx]), np.imag(ideal_sym_map2[idx]),
-                    np.real(err_vec2[idx]), np.imag(err_vec2[idx]),
-                    color="crimson", width=0.002, head_width=0.05, alpha=0.7, length_includes_head=True
-                )
-            plt.title("EVM vectors")
-            plt.xlabel("In-phase")
-            plt.ylabel("Quadrature")
-            plt.grid(True)
-            plt.legend(loc="best")
-            plt.axis("equal")
-            plt.tight_layout()
-            plt.figure(figsize=(10, 4))
-            plt.plot(evm_per_symbol2, markersize=3, alpha=0.6)
-            plt.title(f'EVM vs Symbol Index (RMS: {evm_rms2:.2f}%) — Phase Corrected')
-            plt.xlabel('Symbol Index (after transient skip)')
-            plt.ylabel('EVM (%)')
-            plt.grid(True)
-            plt.ylim(0, max(50, np.max(evm_per_symbol2)*1.1 if len(evm_per_symbol2)>0 else 50) )
-            plt.tight_layout()
+            # EVM график по символам
+            ax_evm_plot = axs[-1]
+            ax_evm_plot.clear()
+            ax_evm_plot.plot(evm_per_symbol2, markersize=3, alpha=0.6)
+            ax_evm_plot.set_title(f'EVM vs Symbol Index (RMS: {evm_rms2:.2f}%)')
+            ax_evm_plot.set_xlabel('Symbol Index (after transient skip)')
+            ax_evm_plot.set_ylabel('EVM (%)')
+            ax_evm_plot.grid(True)
+            ax_evm_plot.set_ylim(0, max(50, np.max(evm_per_symbol2)*1.1 if len(evm_per_symbol2)>0 else 50))
+            print("[INFO] EVM vs Symbol Index нарисован")
+
         else:
             print("[INFO] Недостаточно символов для анализа EVM после пропуска переходного процесса.")
+
+        fig.tight_layout()
 
     except Exception as e:
         print(f"[ERROR] Произошла ошибка: {e}")
